@@ -10,6 +10,7 @@
  * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  * Portions Copyright (c) 2013, Giannis Mouchakis gmouchakis@gmail.com
+ * Portions Copyright (c) 2013, N.C.S.R. "Demokritos"
  *
  * IDENTIFICATION
  *	  src/backend/access/reindex/reindex.c
@@ -29,13 +30,18 @@
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
 #include <regex.h>
+#include <string.h>
+//#include <time.h>
 
-ItemPointerData ItemPointerDataArray[42];
+ItemPointerData ItemPointerDataArray[1000000];
 int position = 0;
 const char* my_regex = "^http";
-const char* begin_regex = "^re:";
 const char* begin_regex_str = "re:";
-const int begin_regex_str_length = (int) strlen(begin_regex_str);
+const size_t begin_regex_str_length = 3;
+static regex_t* regex_ptr = NULL;
+int dead = 0;
+int current_position = 0;
+bool have_checked=false;
 
 /* Working state for btbuild and its callback */
 typedef struct
@@ -170,6 +176,11 @@ btbuild(PG_FUNCTION_ARGS)
 	result->heap_tuples = reltuples;
 	result->index_tuples = buildstate.indtuples;
 
+	elog(INFO, "reltuples=%f", reltuples);
+	elog(INFO, "index_tuples=%f", buildstate.indtuples);
+	elog(INFO, "position(array)=%d", position);
+	elog(INFO, "dead=%d", dead);
+
 	PG_RETURN_POINTER(result);
 }
 
@@ -196,12 +207,17 @@ btbuildCallback(Relation index,
 	 * processing
 	 */
 	if (tupleIsAlive || buildstate->spool2 == NULL)
+	{
 		_bt_spool(itup, buildstate->spool);
+		r_i_insert(index, values, &(htup->t_self));
+	}
 	else
 	{
 		/* dead tuples are put into spool2 */
 		buildstate->haveDead = true;
 		_bt_spool(itup, buildstate->spool2);
+		dead++;
+		elog(INFO, "dead");
 	}
 
 	buildstate->indtuples += 1;
@@ -240,6 +256,141 @@ btbuildempty(PG_FUNCTION_ARGS)
 }
 
 /*
+ *	r_i_insert() -- insert tuple pointer in my array if it matches my regex.
+ */
+void
+r_i_insert(Relation index, Datum *values, ItemPointer ht_ctid)
+{
+	int is_my_index = strcmp("b_str_idx", index->rd_rel->relname.data);
+	if(is_my_index == 0) {//if index name is b_str_idx
+		char *textptr;
+		text *str = DatumGetTextP(*values);
+		int32 i;
+		int32 size;
+
+		size = VARSIZE(str) - VARHDRSZ;
+		textptr = malloc(size); //TODO: use palloc?
+		//elog(INFO, "size=%d", size);
+		for (i = 0; i < size; i++) {
+			textptr[i] = str->vl_dat[i];
+			//elog(INFO, "%c", str->vl_dat[i]);
+			//elog(INFO, "%c", VARDATA(str)[i]);
+		}
+		textptr[size] = '\0';
+		//elog(INFO, "final string is %s", textptr);
+
+		// regex_t regex;
+		int reti;
+		// char msgbuf[100];
+
+		if (regex_ptr == NULL ) {
+			regex_ptr = malloc(sizeof(regex_t));
+			/* Compile regular expression */
+			reti = regcomp(regex_ptr, my_regex, 0);
+			//if( reti ){ fprintf(stderr, "Could not compile regex\n"); exit(1); }
+		}
+
+		/* Execute regular expression */
+		reti = regexec(regex_ptr, textptr, 0, NULL, 0);
+		if (!reti) {
+			ItemPointerDataArray[position] = *ht_ctid;
+			position++;
+			//elog(INFO, "value matches to regex. inserted");
+			//puts("Match");
+		}
+		/* else if( reti == REG_NOMATCH ){
+		 	 puts("No match");
+		 }
+		 else{
+		 	 regerror(reti, &regex, msgbuf, sizeof(msgbuf));
+		 	 fprintf(stderr, "Regex match failed: %s\n", msgbuf);
+		 	 exit(1);
+		 }*/
+
+		/* Free compiled regular expression if you want to use the regex_t again */
+		//regfree(&regex);
+		free(textptr);					//TODO: use pfree?
+
+		//memcpy(dst,str->vl_dat,size); dst[len] = '\0';
+	}
+}
+
+bool
+r_i_matches(IndexScanDesc scan)
+{
+	bool result = false;
+
+	/*time_t start,end;
+	double dif;
+	time (&start);*/
+	//elog(INFO, "scan->indexRelation->rd_id = %d", scan->indexRelation->rd_id);
+	//if (scan->indexRelation->rd_id==41192){
+	int is_my_index = strcmp("b_str_idx", scan->indexRelation->rd_rel->relname.data);
+	if(is_my_index == 0) {
+		char *textptr;
+		//elog(INFO, "scanKey %s", DatumGetTextP(scan->keyData->sk_argument));
+		text *str = DatumGetTextP(scan->keyData->sk_argument);
+		int32 i;
+		int32 size;
+
+		size = VARSIZE(str) - VARHDRSZ;
+		textptr = malloc(size);
+		//elog(INFO, "size=%d", size);
+		for (i = 0; i < size; i++) {
+			textptr[i] = str->vl_dat[i];
+			//elog(INFO, "%c", str->vl_dat[i]);
+			//elog(INFO, "%c", VARDATA(str)[i]);
+		}
+		textptr[size] = '\0';
+		//elog(INFO, "final string is %s", textptr);
+
+		int result_begin = strncmp(begin_regex_str, textptr, begin_regex_str_length);
+		if(result_begin == 0) {
+
+			int result_regex = strcmp(my_regex, textptr + begin_regex_str_length);
+			if (result_regex == 0) {
+				result = true;
+				//elog(INFO, "key matches to regex %s. returning my values.", my_regex);
+				/*time (&end);
+				dif = difftime (end,start);
+				elog(INFO, "My index took %f seconds to run.", dif );*/
+				/*elog(INFO, "nentries=%d", tbm->nentries);
+				elog(INFO, "maxentries=%d", tbm->maxentries);
+				elog(INFO, "npages=%d", tbm->npages);
+				elog(INFO, "nchunks=%d", tbm->nchunks);
+				elog(INFO, "iterating=%d", tbm->iterating);*/
+
+			}
+		}
+		free(textptr);
+	}
+
+	return result;
+}
+
+bool
+r_i_gettuple(IndexScanDesc scan)
+{
+	//elog(INFO, "r_i_gettuple");
+
+	bool res;
+
+	if (current_position < position) {
+		//elog(INFO, "current_position=%d", current_position);
+		scan->xs_ctup.t_self = ItemPointerDataArray[current_position];
+		current_position++;
+		res = true;
+	} else {
+		//elog(INFO, "false!");
+		res = false;
+		current_position = 0;
+		have_checked = false;
+	}
+
+	return res;
+}
+
+/*
  *	btinsert() -- insert an index tuple into a btree.
  *
  *		Descend the tree recursively, find the appropriate location for our
@@ -257,67 +408,7 @@ btinsert(PG_FUNCTION_ARGS)
 	bool		result;
 	IndexTuple	itup;
 
-	char *textptr;
-	if (heapRel->rd_id == 16385) {
-
-		/*ItemPointer newPtr;
-		elog(INFO, "eftase 1");
-		ItemPointerCopy(ht_ctid, newPtr);
-		elog(INFO, "eftase 2");
-
-		ItemPointerArray[position] = *newPtr;*/
-		//free(newPtr);
-
-		//ItemPointerCopy(ht_ctid, ItemPointerArray[position]);
-
-
-		text *str = DatumGetTextP(*values);
-		int32 i;
-		int32 size;
-
-		size = VARSIZE(str) - VARHDRSZ;
-		textptr = malloc(size);//TODO: use palloc?
-		//elog(INFO, "size=%d", size);
-		for (i = 0; i < size; i++) {
-			textptr[i] = str->vl_dat[i];
-			//elog(INFO, "%c", str->vl_dat[i]);
-			//elog(INFO, "%c", VARDATA(str)[i]);
-		}
-		textptr[size] = '\0';
-		//elog(INFO, "final string is %s", textptr);
-
-        regex_t regex;
-        int reti;
-       // char msgbuf[100];
-
-        /* Compile regular expression */
-        reti = regcomp(&regex, my_regex, 0);
-        //if( reti ){ fprintf(stderr, "Could not compile regex\n"); exit(1); }
-
-        /* Execute regular expression */
-        reti = regexec(&regex, textptr, 0, NULL, 0);
-        if( !reti ){
-        	ItemPointerDataArray[position] = *ht_ctid;
-        	position++;
-        	elog(INFO, "value matches to regex. inserted");
-                //puts("Match");
-        }
-       /* else if( reti == REG_NOMATCH ){
-                puts("No match");
-        }
-        else{
-                regerror(reti, &regex, msgbuf, sizeof(msgbuf));
-                fprintf(stderr, "Regex match failed: %s\n", msgbuf);
-                exit(1);
-        }*/
-
-        /* Free compiled regular expression if you want to use the regex_t again */
-        regfree(&regex);
-
-		free(textptr);//TODO: use pfree?
-
-		//memcpy(dst,str->vl_dat,size); dst[len] = '\0';
-	}
+	r_i_insert(rel, values, ht_ctid);
 
 	/* generate an index tuple */
 	itup = index_form_tuple(RelationGetDescr(rel), values, isnull);
@@ -343,6 +434,22 @@ btgettuple(PG_FUNCTION_ARGS)
 
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;
+
+	//elog(INFO, "btgettuple");
+
+	/*if (r_i_matches(scan)) {
+		PG_RETURN_BOOL(r_i_gettuple(scan));
+	}*/
+
+
+	if (have_checked) {
+		//elog(INFO, "have_checked");
+		PG_RETURN_BOOL(r_i_gettuple(scan));
+	} else if (r_i_matches(scan)) {
+		//elog(INFO, "r_i_matches(scan)");
+		have_checked = true;
+		PG_RETURN_BOOL(r_i_gettuple(scan));
+	}
 
 	/*
 	 * If we have any array keys, initialize them during first call for a
@@ -418,66 +525,13 @@ btgetbitmap(PG_FUNCTION_ARGS)
 	int64		ntids = 0;
 	ItemPointer heapTid;
 
-	//elog(INFO, "scan->heapRelation->rd_id = %d", scan->indexRelation->rd_id);
-	if (scan->indexRelation->rd_id==16391){
-		char *textptr;
-		//elog(INFO, "scanKey %s", DatumGetTextP(scan->keyData->sk_argument));
-		text *str = DatumGetTextP(scan->keyData->sk_argument);
-		int32 i;
-		int32 size;
-
-		size = VARSIZE(str) - VARHDRSZ;
-		textptr = malloc(size);
-		//elog(INFO, "size=%d", size);
-		for (i = 0; i < size; i++) {
-			textptr[i] = str->vl_dat[i];
-			//elog(INFO, "%c", str->vl_dat[i]);
-			//elog(INFO, "%c", VARDATA(str)[i]);
+	if (r_i_matches(scan)) {
+		int x;
+		for (x = 0; x < position; x++) {
+			tbm_add_tuples(tbm, &ItemPointerDataArray[x], 1, false );
+			ntids++;
 		}
-		textptr[size] = '\0';
-		//elog(INFO, "final string is %s", textptr);
-
-		int result_begin = strncmp(begin_regex_str, textptr, begin_regex_str_length);
-		if(result_begin == 0) {
-
-		    puts("compare match");
-		}
-
-		regex_t regex;
-		int reti;
-		// char msgbuf[100];
-
-		/* Compile regular expression */
-		reti = regcomp(&regex, begin_regex, 0);
-		//if( reti ){ fprintf(stderr, "Could not compile regex\n"); exit(1); }
-
-		/* Execute regular expression */
-		reti = regexec(&regex, textptr, 0, NULL, 0);
-		if (!reti) {
-			elog(INFO, "key matches to regex. returning my values");
-			int x;
-			for (x = 0; x < position; x++) {
-				tbm_add_tuples(tbm, &ItemPointerDataArray[x], 1, false );
-				ntids++;
-			}
-			regfree(&regex);
-			free(textptr);
-			PG_RETURN_INT64(ntids);
-			//puts("Match");
-		}
-		/* else if( reti == REG_NOMATCH ){
-		 	 puts("No match");
-		 }
-		 else{
-		 	 regerror(reti, &regex, msgbuf, sizeof(msgbuf));
-		 	 fprintf(stderr, "Regex match failed: %s\n", msgbuf);
-		 	 exit(1);
-		 }*/
-
-		/* Free compiled regular expression if you want to use the regex_t again */
-		regfree(&regex);
-
-		free(textptr);
+		PG_RETURN_INT64(ntids);
 	}
 
 	/*
@@ -529,6 +583,10 @@ btgetbitmap(PG_FUNCTION_ARGS)
 		tbm_add_tuples(tbm, ItemPointerArray[0], 1, false);
 		ntids++;
 	}*/
+
+	/*time (&end);
+	dif = difftime (end,start);
+	elog(INFO, "Default index took %f seconds to run.", dif );*/
 
 	PG_RETURN_INT64(ntids);
 }
