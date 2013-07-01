@@ -1,0 +1,15 @@
+In order to test the proposed index follow these steps:
+
+1. download the postgres source code from http://ftp.postgresql.org/pub/source/v9.2.4/postgresql-9.2.4.tar.bz2 and extract
+
+2. open the postgresql-9.2.4/src/backend/access/nbtree/ntree.c file and replace its contents with the contents of the file found at https://github.com/gmouchakis/reindex/blob/master/pgindex/src/backend/access/reindex/reindex.c
+
+3. install postgres using these directions: http://www.postgresql.org/docs/9.2/static/installation.html
+
+4. connect to postgres with psql, create a table named "b" with a text column named "str", fill the table with data and create an index using the command "create index on b(str);". Do not create another index on this table. Data starting with http, httpa and httpb will be kept in our index.
+
+5. Disable index only scans with the command "set enable_indexonlyscan = false;".
+
+6. To get the index's contents use the queries "select * from b where str='re:^http';", "select * from b where str='re:^httpa';" and "select * from b where str='re:^httpb';"
+
+7. If you close psql the index contents will be lost because they are kept in memory. In this case you have to drop the index and create it again.
