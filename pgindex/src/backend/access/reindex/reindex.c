@@ -33,15 +33,36 @@
 #include <string.h>
 //#include <time.h>
 
-ItemPointerData ItemPointerDataArray[1000000];
-int position = 0;
-const char* my_regex = "^http";
+ItemPointerData http_array[10000000];
+int http_array_size = 0;
+const char* http_regex = "^http";
+static regex_t* http_regex_ptr = NULL;
+
+ItemPointerData httpa_array[1000000];
+int httpa_array_size = 0;
+const char* httpa_regex = "^httpa";
+static regex_t* httpa_regex_ptr = NULL;
+//int httpa_current_position = 0;
+//bool httpa_have_checked = false;
+
+
+ItemPointerData httpb_array[1000];
+int httpb_array_size = 0;
+const char* httpb_regex = "^httpb";
+static regex_t* httpb_regex_ptr = NULL;
+//int httpb_current_position = 0;
+//bool httpb_have_checked = false;
+
 const char* begin_regex_str = "re:";
 const size_t begin_regex_str_length = 3;
-static regex_t* regex_ptr = NULL;
-int dead = 0;
+
 int current_position = 0;
-bool have_checked=false;
+bool have_checked = false;
+int current_matched_regex = -1;
+int current_array_size = 0;
+ItemPointerData *current_regex_array = NULL;
+
+int dead = 0;
 
 /* Working state for btbuild and its callback */
 typedef struct
@@ -178,7 +199,9 @@ btbuild(PG_FUNCTION_ARGS)
 
 	elog(INFO, "reltuples=%f", reltuples);
 	elog(INFO, "index_tuples=%f", buildstate.indtuples);
-	elog(INFO, "position(array)=%d", position);
+	elog(INFO, "http_array_size=%d", http_array_size);
+	elog(INFO, "httpa_array_size=%d", httpa_array_size);
+	elog(INFO, "httpb_array_size=%d", httpb_array_size);
 	elog(INFO, "dead=%d", dead);
 
 	PG_RETURN_POINTER(result);
@@ -283,20 +306,18 @@ r_i_insert(Relation index, Datum *values, ItemPointer ht_ctid)
 		int reti;
 		// char msgbuf[100];
 
-		if (regex_ptr == NULL ) {
-			regex_ptr = malloc(sizeof(regex_t));
+		if (http_regex_ptr == NULL ) {
+			http_regex_ptr = malloc(sizeof(regex_t));
 			/* Compile regular expression */
-			reti = regcomp(regex_ptr, my_regex, 0);
+			reti = regcomp(http_regex_ptr, http_regex, 0);
 			//if( reti ){ fprintf(stderr, "Could not compile regex\n"); exit(1); }
 		}
-
 		/* Execute regular expression */
-		reti = regexec(regex_ptr, textptr, 0, NULL, 0);
+		reti = regexec(http_regex_ptr, textptr, 0, NULL, 0);
 		if (!reti) {
-			ItemPointerDataArray[position] = *ht_ctid;
-			position++;
+			http_array[http_array_size] = *ht_ctid;
+			http_array_size++;
 			//elog(INFO, "value matches to regex. inserted");
-			//puts("Match");
 		}
 		/* else if( reti == REG_NOMATCH ){
 		 	 puts("No match");
@@ -306,19 +327,46 @@ r_i_insert(Relation index, Datum *values, ItemPointer ht_ctid)
 		 	 fprintf(stderr, "Regex match failed: %s\n", msgbuf);
 		 	 exit(1);
 		 }*/
+		if (httpa_regex_ptr == NULL ) {
+			httpa_regex_ptr = malloc(sizeof(regex_t));
+			/* Compile regular expression */
+			reti = regcomp(httpa_regex_ptr, httpa_regex, 0);
+		}
+		reti = regexec(httpa_regex_ptr, textptr, 0, NULL, 0);
+		if (!reti) {
+			httpa_array[httpa_array_size] = *ht_ctid;
+			httpa_array_size++;
+			//elog(INFO, "value matches to regex. inserted");
+		} else {
+			if (httpb_regex_ptr == NULL ) {
+				httpb_regex_ptr = malloc(sizeof(regex_t));
+				/* Compile regular expression */
+				reti = regcomp(httpb_regex_ptr, httpb_regex, 0);
+			}
+			reti = regexec(httpb_regex_ptr, textptr, 0, NULL, 0);
+			if (!reti) {
+				httpb_array[httpb_array_size] = *ht_ctid;
+				httpb_array_size++;
+				//elog(INFO, "value matches to regex. inserted");
+			}
+		}
 
 		/* Free compiled regular expression if you want to use the regex_t again */
 		//regfree(&regex);
-		free(textptr);					//TODO: use pfree?
+		free(textptr);//TODO: use pfree?
 
 		//memcpy(dst,str->vl_dat,size); dst[len] = '\0';
 	}
 }
 
-bool
+/*
+ * returns -1 if no match, 0 if matches to ^http, 1 if matches to ^httpa and 2 matches to ^httpb
+ */
+int
 r_i_matches(IndexScanDesc scan)
 {
-	bool result = false;
+	//bool result = false;
+	int result = -1;
 
 	/*time_t start,end;
 	double dif;
@@ -347,9 +395,9 @@ r_i_matches(IndexScanDesc scan)
 		int result_begin = strncmp(begin_regex_str, textptr, begin_regex_str_length);
 		if(result_begin == 0) {
 
-			int result_regex = strcmp(my_regex, textptr + begin_regex_str_length);
+			int result_regex = strcmp(http_regex, textptr + begin_regex_str_length);
 			if (result_regex == 0) {
-				result = true;
+				result = 0;
 				//elog(INFO, "key matches to regex %s. returning my values.", my_regex);
 				/*time (&end);
 				dif = difftime (end,start);
@@ -361,6 +409,16 @@ r_i_matches(IndexScanDesc scan)
 				elog(INFO, "iterating=%d", tbm->iterating);*/
 
 			}
+			result_regex = strcmp(httpa_regex, textptr + begin_regex_str_length);
+			if (result_regex == 0) {
+				result = 1;
+			} else {
+				result_regex = strcmp(httpb_regex, textptr + begin_regex_str_length);
+				if (result_regex == 0) {
+					result = 2;
+				}
+			}
+
 		}
 		free(textptr);
 	}
@@ -375,9 +433,9 @@ r_i_gettuple(IndexScanDesc scan)
 
 	bool res;
 
-	if (current_position < position) {
+	if (current_position < current_array_size) {
 		//elog(INFO, "current_position=%d", current_position);
-		scan->xs_ctup.t_self = ItemPointerDataArray[current_position];
+		scan->xs_ctup.t_self = current_regex_array[current_position];
 		current_position++;
 		res = true;
 	} else {
@@ -385,6 +443,9 @@ r_i_gettuple(IndexScanDesc scan)
 		res = false;
 		current_position = 0;
 		have_checked = false;
+		current_regex_array = NULL;
+		current_array_size = 0;
+		current_matched_regex = -1;
 	}
 
 	return res;
@@ -436,19 +497,29 @@ btgettuple(PG_FUNCTION_ARGS)
 	scan->xs_recheck = false;
 
 	//elog(INFO, "btgettuple");
-
 	/*if (r_i_matches(scan)) {
 		PG_RETURN_BOOL(r_i_gettuple(scan));
 	}*/
 
 
 	if (have_checked) {
-		//elog(INFO, "have_checked");
 		PG_RETURN_BOOL(r_i_gettuple(scan));
-	} else if (r_i_matches(scan)) {
-		//elog(INFO, "r_i_matches(scan)");
-		have_checked = true;
-		PG_RETURN_BOOL(r_i_gettuple(scan));
+	} else {
+		current_matched_regex = r_i_matches(scan);
+		if (current_matched_regex != -1) {
+			if (current_matched_regex == 0) {
+				current_regex_array = http_array;
+				current_array_size = http_array_size;
+			} else if (current_matched_regex == 1) {
+				current_regex_array = httpa_array;
+				current_array_size = httpa_array_size;
+			} else if (current_matched_regex == 2) {
+				current_regex_array = httpb_array;
+				current_array_size = httpb_array_size;
+			}
+			have_checked = true;
+			PG_RETURN_BOOL(r_i_gettuple(scan));
+		}
 	}
 
 	/*
@@ -525,10 +596,28 @@ btgetbitmap(PG_FUNCTION_ARGS)
 	int64		ntids = 0;
 	ItemPointer heapTid;
 
-	if (r_i_matches(scan)) {
+	int matched_regex = r_i_matches(scan);
+	/*if (matched_regex != 0) {
+
+	}*/
+	if (matched_regex == 0) {
 		int x;
-		for (x = 0; x < position; x++) {
-			tbm_add_tuples(tbm, &ItemPointerDataArray[x], 1, false );
+		for (x = 0; x < http_array_size; x++) {
+			tbm_add_tuples(tbm, &http_array[x], 1, false );
+			ntids++;
+		}
+		PG_RETURN_INT64(ntids);
+	} else if (matched_regex == 1) {
+		int x;
+		for (x = 0; x < httpa_array_size; x++) {
+			tbm_add_tuples(tbm, &httpa_array[x], 1, false );
+			ntids++;
+		}
+		PG_RETURN_INT64(ntids);
+	} else if (matched_regex == 2) {
+		int x;
+		for (x = 0; x < httpb_array_size; x++) {
+			tbm_add_tuples(tbm, &httpb_array[x], 1, false );
 			ntids++;
 		}
 		PG_RETURN_INT64(ntids);
