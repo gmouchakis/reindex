@@ -4,7 +4,6 @@
  *	  Implementation of regular expression index for  PostgreSQL.
  *
  * NOTES
- *	  This file contains only the public interface routines.
  *
  *
  * Portions Copyright (c) 1996-2012, PostgreSQL Global Development Group
@@ -42,6 +41,7 @@
 #include "parser/analyze.h"
 #include "miscadmin.h"
 #include "access/printtup.h"
+#include "executor/spi.h"
 
 //#include "/home/giannis/project/pgsql/src/backend/tcop/postgres.c"
 
@@ -73,6 +73,10 @@ bool have_checked = false;
 int current_matched_regex = -1;
 int current_array_size = 0;
 ItemPointerData *current_regex_array = NULL;
+
+ItemPointerData itemPointerData;
+
+int proc = 0;
 
 int dead = 0;
 
@@ -217,44 +221,19 @@ btbuild(PG_FUNCTION_ARGS)
 	elog(INFO, "dead=%d", dead);*/
 
 	//test create table
-	int is_my_index = strcmp("f_str_idx", index->rd_rel->relname.data);
+	//int is_my_index = strcmp("f_str_idx", index->rd_rel->relname.data);
+	int is_my_index = strcmp("magic_index", index->rd_rel->relname.data);
 	if(is_my_index == 0) {
 
-		char *query_string = "create table test_semagrow(str text);";
+		//char *query_string = "create table test_semagrow(str text);";
+		//exec_simple_query2(query_string);
 
-		//CommandDest dest =
-
-		//DestReceiver *dest = CreateDestReceiver(DestNone);
-
-		//makeNode(CreateStmt);
-
-		//Node *utilityStmt= makeNode(CreateStmt);
-		//NodeSetTag(utilityStmt, T_CreateStmt);
-		//utilityStmt.type = T_CreateStmt;
-
-		//standard_ProcessUtility(utilityStmt, query_string, NULL, 1, dest, "");
-
-
-
-		exec_simple_query2(query_string);
-
-		/*CreateStmt stmt;
-
-		stmt.type = T_CreateStmt;
-
-		RangeVar *relation;
-		relation.catalogname = NULL;
-		relation.schemaname = "public";
-		relation.relname = "http_semagrow_index";
-		relation.location = 13;
-		relation.inhOpt = INH_DEFAULT;
-		relation.type = T_RangeVar;
-		relation.relpersistence = 'p';
-		relation.alias = NULL;
-		stmt.relation = relation;
-
-		List *tableElts;*/
-
+		/*elog(LOG, "SPI_connect()=%d", SPI_connect());
+		elog(LOG, "create magic_index_table=%d", SPI_execute("create table magic_index_table(offset_nubmer integer, block_number integer);", false, 0));
+		elog(LOG, "SPI_finish()=%d", SPI_finish());*/
+		SPI_connect();
+		SPI_execute("create table magic_index_table(offset_number integer, block_number integer);", false, 0);
+		SPI_finish();
 
 	}
 
@@ -649,7 +628,8 @@ exec_simple_query2(const char *query_string)
 void
 r_i_insert(Relation index, Datum *values, ItemPointer ht_ctid)
 {
-	int is_my_index = strcmp("b_str_idx", index->rd_rel->relname.data);
+	//int is_my_index = strcmp("b_str_idx", index->rd_rel->relname.data);
+	int is_my_index = strcmp("magic_index", index->rd_rel->relname.data);
 	if(is_my_index == 0) {//if index name is b_str_idx
 		char *textptr;
 		text *str = DatumGetTextP(*values);
@@ -680,9 +660,29 @@ r_i_insert(Relation index, Datum *values, ItemPointer ht_ctid)
 		/* Execute regular expression */
 		reti = regexec(http_regex_ptr, textptr, 0, NULL, 0);
 		if (!reti) {
-			http_array[http_array_size] = *ht_ctid;
-			http_array_size++;
-			//elog(INFO, "value matches to regex. inserted");
+			//http_array[http_array_size] = *ht_ctid;
+			//http_array_size++;
+			//elog(LOG, "SPI_connect()=%d", SPI_connect());
+			SPI_connect();
+			BlockNumber ip_blkid = ItemPointerGetBlockNumber(ht_ctid);
+			OffsetNumber ip_posid = ItemPointerGetOffsetNumber(ht_ctid);
+			//char *query = "insert into magic_index_table(offset_number, block_number) values (? ,?);";
+			SPI_connect();
+			char *fmt = "insert into magic_index_table(offset_number, block_number) values (%u, %u);";
+			size_t buf_len = strlen(fmt) + 12;//2^32 = 4G < 10^10, 2^16 = 64K < 10^5, 15 + 1 (null termination) - 4 (2 x %u) = 12
+			char *query = palloc(buf_len);
+			size_t n = snprintf(query, buf_len, fmt, ip_posid, ip_blkid);
+			//elog(LOG, query);
+			if (n > buf_len) {
+				pfree(query);
+				query = palloc(n + 1);
+				snprintf(query, buf_len, fmt, ip_posid, ip_blkid);
+				elog(WARNING, "n=%d, buf_len=%d, fmt=%d", n, buf_len, strlen(fmt));
+			}
+			SPI_execute(query, false, 0);
+			SPI_finish();
+			pfree(query);
+			//elog(LOG, "value matches to regex. inserted. http_array_size=%d", http_array_size);
 		}
 		/* else if( reti == REG_NOMATCH ){
 		 	 puts("No match");
@@ -738,8 +738,10 @@ r_i_matches(IndexScanDesc scan)
 	time (&start);*/
 	//elog(INFO, "scan->indexRelation->rd_id = %d", scan->indexRelation->rd_id);
 	//if (scan->indexRelation->rd_id==41192){
-	int is_my_index = strcmp("b_str_idx", scan->indexRelation->rd_rel->relname.data);
+	//int is_my_index = strcmp("b_str_idx", scan->indexRelation->rd_rel->relname.data);
+	int is_my_index = strcmp("magic_index", scan->indexRelation->rd_rel->relname.data);
 	if(is_my_index == 0) {
+		//elog(LOG, "eimai sto magic. http_array_size=%d", http_array_size);
 		char *textptr;
 		//elog(INFO, "scanKey %s", DatumGetTextP(scan->keyData->sk_argument));
 		text *str = DatumGetTextP(scan->keyData->sk_argument);
@@ -757,21 +759,28 @@ r_i_matches(IndexScanDesc scan)
 		textptr[size] = '\0';
 		//elog(INFO, "final string is %s", textptr);
 
+		//code bellow to be removed after sesame tests!
+		int result_regex = strcmp("http", textptr + begin_regex_str_length);
+		if (result_regex == 0) {
+			//elog(LOG, "tairiazei sto regex");
+			result = 0;
+		}
+
+/*commented bellow to test with sesame.
 		int result_begin = strncmp(begin_regex_str, textptr, begin_regex_str_length);
 		if(result_begin == 0) {
-
 			int result_regex = strcmp(http_regex, textptr + begin_regex_str_length);
 			if (result_regex == 0) {
 				result = 0;
 				//elog(INFO, "key matches to regex %s. returning my values.", my_regex);
-				/*time (&end);
+				time (&end);
 				dif = difftime (end,start);
-				elog(INFO, "My index took %f seconds to run.", dif );*/
-				/*elog(INFO, "nentries=%d", tbm->nentries);
+				elog(INFO, "My index took %f seconds to run.", dif );
+				elog(INFO, "nentries=%d", tbm->nentries);
 				elog(INFO, "maxentries=%d", tbm->maxentries);
 				elog(INFO, "npages=%d", tbm->npages);
 				elog(INFO, "nchunks=%d", tbm->nchunks);
-				elog(INFO, "iterating=%d", tbm->iterating);*/
+				elog(INFO, "iterating=%d", tbm->iterating);
 
 			}
 			result_regex = strcmp(httpa_regex, textptr + begin_regex_str_length);
@@ -784,7 +793,7 @@ r_i_matches(IndexScanDesc scan)
 				}
 			}
 
-		}
+		}*/
 		free(textptr);
 	}
 
@@ -794,17 +803,17 @@ r_i_matches(IndexScanDesc scan)
 bool
 r_i_gettuple(IndexScanDesc scan)
 {
-	//elog(INFO, "r_i_gettuple");
+	//elog(LOG, "r_i_gettuple");
 
 	bool res;
 
 	if (current_position < current_array_size) {
-		//elog(INFO, "current_position=%d", current_position);
+		//elog(LOG, "current_position=%d", current_position);
 		scan->xs_ctup.t_self = current_regex_array[current_position];
 		current_position++;
 		res = true;
 	} else {
-		//elog(INFO, "false!");
+		//elog(LOG, "false!");
 		res = false;
 		current_position = 0;
 		have_checked = false;
@@ -815,6 +824,100 @@ r_i_gettuple(IndexScanDesc scan)
 
 	return res;
 }
+
+
+bool
+r_i_gettuple_disk(IndexScanDesc scan)
+{
+	//elog(LOG, "r_i_gettuple");
+
+	bool res;
+	//elog(LOG, "current_array_size");
+	if (current_position < current_array_size) {
+		//elog(LOG, "current_position=%d", current_position);
+		//scan->xs_ctup.t_self = current_regex_array[current_position];
+		elog(DEBUG5, "begin");
+		TupleDesc tupdesc = SPI_tuptable->tupdesc;
+		SPITupleTable *tuptable = SPI_tuptable;
+		elog(DEBUG5, "reached 1");
+		HeapTuple tuple = tuptable->vals[current_position];
+		elog(DEBUG5, "reached 2");
+		bool isnull;
+		OffsetNumber ip_posid =  DatumGetUInt16(SPI_getbinval(tuple, tupdesc, 1, &isnull));
+		elog(DEBUG5, "reached 3");
+		BlockNumber ip_blkid = DatumGetUInt32(SPI_getbinval(tuple, tupdesc, 2, &isnull));
+		elog(DEBUG5, "reached 5");
+		elog(DEBUG5, "ip_blkid=%u", ip_blkid);
+		elog(DEBUG5, "ip_posid=%u", ip_posid);
+		ItemPointerSet(&itemPointerData, ip_blkid, ip_posid);
+		elog(DEBUG5, "ItemPointerIsValid(itemPointer)=%d", ItemPointerIsValid(&itemPointerData));
+		elog(DEBUG5, "reached 6");
+		scan->xs_ctup.t_self = itemPointerData;
+		elog(DEBUG5, "reached 7");
+		current_position++;
+		elog(DEBUG5, "reached 8");
+		res = true;
+		elog(DEBUG5, "reached 9");
+	} else {
+		//elog(LOG, "false!");
+		res = false;
+		current_position = 0;
+		have_checked = false;
+		current_regex_array = NULL;
+		current_array_size = 0;
+		current_matched_regex = -1;
+		proc = 0;
+		SPI_finish();
+	}
+
+	return res;
+}
+
+
+/*int r_i_get_index_tuples();
+
+int
+r_i_get_index_tuples()
+{
+    char *command;
+    int ret;
+    int proc;
+
+     Convert given text object to a C string
+    command = text_to_cstring("SELECT * from magic_index_table;");
+
+    SPI_connect();
+
+    ret = SPI_execute(command, true, 0);
+
+    proc = SPI_processed;
+
+     * If some rows were fetched, print them via elog(INFO).
+
+    if (ret > 0 && SPI_tuptable != NULL)
+    {
+        TupleDesc tupdesc = SPI_tuptable->tupdesc;
+        SPITupleTable *tuptable = SPI_tuptable;
+        char buf[8192];
+        int i, j;
+
+        for (j = 0; j < proc; j++)
+        {
+            HeapTuple tuple = tuptable->vals[j];
+
+            for (i = 1, buf[0] = 0; i <= tupdesc->natts; i++)
+                snprintf(buf + strlen (buf), sizeof(buf) - strlen(buf), " %s%s",
+                        SPI_getvalue(tuple, tupdesc, i),
+                        (i == tupdesc->natts) ? " " : " |");
+            elog(INFO, "EXECQ: %s", buf);
+        }
+    }
+
+    SPI_finish();
+    pfree(command);
+
+    return (proc);
+}*/
 
 /*
  *	btinsert() -- insert an index tuple into a btree.
@@ -861,20 +964,30 @@ btgettuple(PG_FUNCTION_ARGS)
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;
 
-	//elog(INFO, "btgettuple");
+	//elog(LOG, "btgettuple");
 	/*if (r_i_matches(scan)) {
 		PG_RETURN_BOOL(r_i_gettuple(scan));
 	}*/
 
 
 	if (have_checked) {
-		PG_RETURN_BOOL(r_i_gettuple(scan));
+		//elog(LOG, "have_checked=true");
+		PG_RETURN_BOOL(r_i_gettuple_disk(scan));
 	} else {
+		//elog(LOG, "have_checked=false");
 		current_matched_regex = r_i_matches(scan);
 		if (current_matched_regex != -1) {
 			if (current_matched_regex == 0) {
+				//elog(LOG, "current_matched_regex == 0");
+				//char *command;
 				current_regex_array = http_array;
-				current_array_size = http_array_size;
+				//command = text_to_cstring("SELECT * from magic_index_table;");
+			    SPI_connect();
+			    SPI_execute("SELECT * from magic_index_table;", true, 0);
+			    //pfree(command);
+				//current_array_size = http_array_size;
+				current_array_size = SPI_processed;
+				//elog(LOG, "current_array_size=%d", current_array_size);
 			} else if (current_matched_regex == 1) {
 				current_regex_array = httpa_array;
 				current_array_size = httpa_array_size;
@@ -883,7 +996,7 @@ btgettuple(PG_FUNCTION_ARGS)
 				current_array_size = httpb_array_size;
 			}
 			have_checked = true;
-			PG_RETURN_BOOL(r_i_gettuple(scan));
+			PG_RETURN_BOOL(r_i_gettuple_disk(scan));
 		}
 	}
 
