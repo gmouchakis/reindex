@@ -830,7 +830,7 @@ bool
 r_i_gettuple_disk(IndexScanDesc scan)
 {
 	//elog(LOG, "r_i_gettuple");
-
+	elog(DEBUG5, "relation=%s, index=%s, current_position=%d, current_array_size=%d,", scan->heapRelation->rd_rel->relname.data, scan->indexRelation->rd_rel->relname.data, current_position, current_array_size);
 	bool res;
 	//elog(LOG, "current_array_size");
 	if (current_position < current_array_size) {
@@ -872,52 +872,6 @@ r_i_gettuple_disk(IndexScanDesc scan)
 
 	return res;
 }
-
-
-/*int r_i_get_index_tuples();
-
-int
-r_i_get_index_tuples()
-{
-    char *command;
-    int ret;
-    int proc;
-
-     Convert given text object to a C string
-    command = text_to_cstring("SELECT * from magic_index_table;");
-
-    SPI_connect();
-
-    ret = SPI_execute(command, true, 0);
-
-    proc = SPI_processed;
-
-     * If some rows were fetched, print them via elog(INFO).
-
-    if (ret > 0 && SPI_tuptable != NULL)
-    {
-        TupleDesc tupdesc = SPI_tuptable->tupdesc;
-        SPITupleTable *tuptable = SPI_tuptable;
-        char buf[8192];
-        int i, j;
-
-        for (j = 0; j < proc; j++)
-        {
-            HeapTuple tuple = tuptable->vals[j];
-
-            for (i = 1, buf[0] = 0; i <= tupdesc->natts; i++)
-                snprintf(buf + strlen (buf), sizeof(buf) - strlen(buf), " %s%s",
-                        SPI_getvalue(tuple, tupdesc, i),
-                        (i == tupdesc->natts) ? " " : " |");
-            elog(INFO, "EXECQ: %s", buf);
-        }
-    }
-
-    SPI_finish();
-    pfree(command);
-
-    return (proc);
-}*/
 
 /*
  *	btinsert() -- insert an index tuple into a btree.
@@ -969,11 +923,11 @@ btgettuple(PG_FUNCTION_ARGS)
 		PG_RETURN_BOOL(r_i_gettuple(scan));
 	}*/
 
-
-	if (have_checked) {
+	//have_checked does not work because probably postgres executes queries before finishing the index query
+	/*if (have_checked) {
 		//elog(LOG, "have_checked=true");
 		PG_RETURN_BOOL(r_i_gettuple_disk(scan));
-	} else {
+	} else {*/
 		//elog(LOG, "have_checked=false");
 		current_matched_regex = r_i_matches(scan);
 		if (current_matched_regex != -1) {
@@ -998,7 +952,7 @@ btgettuple(PG_FUNCTION_ARGS)
 			have_checked = true;
 			PG_RETURN_BOOL(r_i_gettuple_disk(scan));
 		}
-	}
+	//}
 
 	/*
 	 * If we have any array keys, initialize them during first call for a
